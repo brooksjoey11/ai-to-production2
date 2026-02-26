@@ -1,10 +1,11 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import Header from "@/components/Header";
 import { trpc } from "@/lib/trpc";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { toast } from "sonner";
 import { Save, Loader2, RefreshCw, Database } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { APP_CONFIG } from "@shared/config";
 
 const PIPELINE_STEPS = ["forensic", "rebuilder", "quality"] as const;
 type StepName = (typeof PIPELINE_STEPS)[number];
@@ -222,11 +223,11 @@ function ModelConfig() {
   return (
     <div className="space-y-4">
       <p className="font-mono text-sm text-muted-foreground">
-        Select the LLM model for each pipeline step. Changes take effect within 5 minutes (or immediately after cache clear).
+        Select the LLM model for each pipeline step. Changes take effect immediately (cache is invalidated on save).
       </p>
 
       {PIPELINE_STEPS.map((step) => {
-        const currentModel = modelsQuery.data?.[step] ?? "gpt-4-turbo";
+        const currentModel = modelsQuery.data?.[step] ?? APP_CONFIG.defaultModel;
         return (
           <div key={step} className="border-2 border-black">
             <div className="border-b-2 border-black px-4 py-3 flex items-center justify-between">

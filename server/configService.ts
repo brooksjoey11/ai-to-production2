@@ -1,14 +1,76 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "./db";
 import { systemPrompts, modelConfig } from "../drizzle/schema";
+import { getRedis, isRedisAvailable } from "./redis";
+import logger from "./logger";
+import { APP_CONFIG } from "@shared/config";
 
-// ─── In-memory cache for model selections (5-minute TTL) ───
-interface CacheEntry {
-  model: string;
-  timestamp: number;
+const CACHE_PREFIX = "atp:config:";
+const PROMPT_KEY = (step: string) => `${CACHE_PREFIX}prompt:${step}`;
+const MODEL_KEY = (step: string) => `${CACHE_PREFIX}model:${step}`;
+
+// ─── In-memory fallback cache (used when Redis is unavailable) ───
+interface FallbackEntry {
+  value: string;
+  expiresAt: number;
 }
-const modelCache: Map<string, CacheEntry> = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const fallbackCache: Map<string, FallbackEntry> = new Map();
+
+function getFallback(key: string): string | null {
+  const entry = fallbackCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    fallbackCache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function setFallback(key: string, value: string, ttlSeconds: number): void {
+  fallbackCache.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
+}
+
+function deleteFallback(key: string): void {
+  fallbackCache.delete(key);
+}
+
+// ─── Cache helpers (Redis primary, in-memory fallback) ───
+
+async function cacheGet(key: string): Promise<string | null> {
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    try {
+      return await redis.get(key);
+    } catch (err) {
+      logger.warn({ err: (err as Error).message, key }, "Redis GET failed, using fallback");
+    }
+  }
+  return getFallback(key);
+}
+
+async function cacheSet(key: string, value: string, ttlSeconds: number = APP_CONFIG.cacheTtlSeconds): Promise<void> {
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    try {
+      await redis.setex(key, ttlSeconds, value);
+    } catch (err) {
+      logger.warn({ err: (err as Error).message, key }, "Redis SETEX failed, using fallback");
+    }
+  }
+  setFallback(key, value, ttlSeconds);
+}
+
+async function cacheDelete(key: string): Promise<void> {
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    try {
+      await redis.del(key);
+    } catch (err) {
+      logger.warn({ err: (err as Error).message, key }, "Redis DEL failed");
+    }
+  }
+  deleteFallback(key);
+}
 
 // ─── Default prompts (fallback if DB is empty) ───
 const DEFAULT_PROMPTS: Record<string, string> = {
@@ -23,13 +85,15 @@ Format the report in markdown with clear sections.`,
   quality: `You are a project manager. Summarize in plain language what was wrong with the original code and what was fixed. List 3-5 bullet points. Note any remaining concerns or recommendations.`,
 };
 
-const DEFAULT_MODEL = "gpt-4-turbo";
-
 type StepName = "forensic" | "rebuilder" | "quality";
 
 // ─── Prompt functions ───
 
 export async function getPrompt(step: StepName): Promise<string> {
+  // Try cache first
+  const cached = await cacheGet(PROMPT_KEY(step));
+  if (cached) return cached;
+
   const db = await getDb();
   if (!db) return DEFAULT_PROMPTS[step] ?? "";
 
@@ -39,7 +103,9 @@ export async function getPrompt(step: StepName): Promise<string> {
     .where(eq(systemPrompts.stepName, step))
     .limit(1);
 
-  return record[0]?.promptText ?? DEFAULT_PROMPTS[step] ?? "";
+  const prompt = record[0]?.promptText ?? DEFAULT_PROMPTS[step] ?? "";
+  await cacheSet(PROMPT_KEY(step), prompt);
+  return prompt;
 }
 
 export async function getAllPrompts(): Promise<Record<string, string>> {
@@ -53,7 +119,6 @@ export async function getAllPrompts(): Promise<Record<string, string>> {
     }
   }
 
-  // Fill missing steps with defaults
   for (const step of ["forensic", "rebuilder", "quality"] as const) {
     if (!result[step]) result[step] = DEFAULT_PROMPTS[step];
   }
@@ -81,19 +146,20 @@ export async function updatePrompt(step: string, promptText: string): Promise<vo
       promptText,
     });
   }
+
+  // Immediately invalidate cache
+  await cacheDelete(PROMPT_KEY(step));
+  logger.info({ step }, "Prompt updated and cache invalidated");
 }
 
-// ─── Model functions (with 5-minute cache) ───
+// ─── Model functions ───
 
 export async function getModel(step: StepName): Promise<string> {
-  const now = Date.now();
-  const cached = modelCache.get(step);
-  if (cached && now - cached.timestamp < CACHE_TTL) {
-    return cached.model;
-  }
+  const cached = await cacheGet(MODEL_KEY(step));
+  if (cached) return cached;
 
   const db = await getDb();
-  if (!db) return DEFAULT_MODEL;
+  if (!db) return APP_CONFIG.defaultModel;
 
   const record = await db
     .select()
@@ -101,8 +167,8 @@ export async function getModel(step: StepName): Promise<string> {
     .where(eq(modelConfig.stepName, step))
     .limit(1);
 
-  const model = record[0]?.selectedModel ?? DEFAULT_MODEL;
-  modelCache.set(step, { model, timestamp: now });
+  const model = record[0]?.selectedModel ?? APP_CONFIG.defaultModel;
+  await cacheSet(MODEL_KEY(step), model);
   return model;
 }
 
@@ -118,7 +184,7 @@ export async function getAllModels(): Promise<Record<string, string>> {
   }
 
   for (const step of ["forensic", "rebuilder", "quality"] as const) {
-    if (!result[step]) result[step] = DEFAULT_MODEL;
+    if (!result[step]) result[step] = APP_CONFIG.defaultModel;
   }
   return result;
 }
@@ -145,14 +211,17 @@ export async function updateModel(step: string, selectedModel: string): Promise<
     });
   }
 
-  // Invalidate cache immediately
-  modelCache.delete(step);
+  // Immediately invalidate cache
+  await cacheDelete(MODEL_KEY(step));
+  logger.info({ step, model: selectedModel }, "Model updated and cache invalidated");
 }
 
 export function invalidateModelCache(step?: string): void {
   if (step) {
-    modelCache.delete(step);
+    cacheDelete(MODEL_KEY(step));
   } else {
-    modelCache.clear();
+    for (const s of ["forensic", "rebuilder", "quality"]) {
+      cacheDelete(MODEL_KEY(s));
+    }
   }
 }

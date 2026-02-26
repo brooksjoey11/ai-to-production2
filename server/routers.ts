@@ -1,4 +1,5 @@
 import { COOKIE_NAME } from "@shared/const";
+import { APP_CONFIG } from "@shared/config";
 import { TRPCError } from "@trpc/server";
 import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -8,41 +9,11 @@ import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { getAllModels, getAllPrompts, updateModel, updatePrompt, invalidateModelCache } from "./configService";
 import { getDb } from "./db";
-import { runPipeline } from "./pipeline";
 import { consumeRateLimit, getRateLimitInfo } from "./rateLimit";
 import { seedDefaults } from "./seed";
-
-const SUPPORTED_LANGUAGES = [
-  "javascript",
-  "typescript",
-  "python",
-  "java",
-  "csharp",
-  "go",
-  "rust",
-  "ruby",
-  "php",
-  "swift",
-  "kotlin",
-  "c",
-  "cpp",
-  "sql",
-  "html",
-  "css",
-  "shell",
-  "other",
-] as const;
-
-const AVAILABLE_MODELS = [
-  "gpt-4-turbo",
-  "gpt-4o",
-  "gpt-4o-mini",
-  "claude-3-5-sonnet",
-  "claude-3-haiku",
-  "gemini-1.5-pro",
-  "gemini-1.5-flash",
-  "gemini-2.5-flash",
-] as const;
+import { enqueuePipelineJob, getJobStatus } from "./jobQueue";
+import { metrics } from "./metrics";
+import logger from "./logger";
 
 export const appRouter = router({
   system: systemRouter,
@@ -59,16 +30,15 @@ export const appRouter = router({
   code: router({
     /** Get current rate limit info for the authenticated user */
     getRateLimit: protectedProcedure.query(async ({ ctx }) => {
-      const info = await getRateLimitInfo(ctx.user.id);
-      return info;
+      return getRateLimitInfo(ctx.user.id);
     }),
 
-    /** Submit code for the three-step LLM pipeline */
+    /** Submit code for the three-step LLM pipeline (async – returns jobId) */
     submit: protectedProcedure
       .input(
         z.object({
-          code: z.string().min(1, "Code is required").max(100000, "Code too large (100KB max)"),
-          language: z.enum(SUPPORTED_LANGUAGES),
+          code: z.string().min(1, "Code is required").max(APP_CONFIG.maxCodeSizeBytes, `Code too large (${APP_CONFIG.maxCodeSizeBytes} bytes max)`),
+          language: z.enum(APP_CONFIG.supportedLanguages),
           userComments: z.string().max(2000).optional(),
         })
       )
@@ -76,6 +46,7 @@ export const appRouter = router({
         // Check rate limit
         const { allowed, info } = await consumeRateLimit(ctx.user.id);
         if (!allowed) {
+          metrics.rateLimitHits.inc();
           throw new TRPCError({
             code: "TOO_MANY_REQUESTS",
             message: `Daily limit reached (${info.total} submissions/day). Resets at ${info.resetAt.toISOString()}.`,
@@ -83,7 +54,7 @@ export const appRouter = router({
         }
 
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Service temporarily unavailable" });
 
         // Save submission
         const insertResult = await db.insert(codeSubmissions).values({
@@ -95,38 +66,37 @@ export const appRouter = router({
 
         const submissionId = insertResult[0].insertId;
 
-        // Run the three-step pipeline
+        // Enqueue async pipeline job
         try {
-          const pipelineOutput = await runPipeline({
+          const jobId = await enqueuePipelineJob({
+            submissionId,
             code: input.code,
             language: input.language,
             userComments: input.userComments,
           });
 
-          // Save pipeline results
-          await db.insert(pipelineResults).values({
-            submissionId,
-            forensicDossier: pipelineOutput.forensicDossier,
-            rebuiltCode: pipelineOutput.rebuiltCode,
-            qualityReport: pipelineOutput.qualityReport,
-            tokensUsed: pipelineOutput.tokensUsed,
-          });
+          metrics.pipelineJobsTotal.inc({ status: "enqueued" });
+          logger.info({ submissionId, jobId, userId: ctx.user.id }, "Code submission enqueued");
 
           return {
             submissionId,
-            forensicDossier: pipelineOutput.forensicDossier,
-            rebuiltCode: pipelineOutput.rebuiltCode,
-            qualityReport: pipelineOutput.qualityReport,
-            tokensUsed: pipelineOutput.tokensUsed,
+            jobId,
             rateLimit: info,
           };
         } catch (error) {
-          console.error("[Pipeline] Error:", error instanceof Error ? error.message : error);
+          logger.error({ err: error instanceof Error ? error.message : "Unknown error", submissionId }, "Failed to enqueue pipeline job");
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
-            message: "The analysis pipeline encountered an error. Please try again.",
+            message: "Failed to start analysis. Please try again.",
           });
         }
+      }),
+
+    /** Poll for job status and results */
+    getJobStatus: protectedProcedure
+      .input(z.object({ jobId: z.string().min(1) }))
+      .query(async ({ input }) => {
+        return getJobStatus(input.jobId);
       }),
 
     /** Get submission history for the authenticated user */
@@ -153,7 +123,7 @@ export const appRouter = router({
       .input(z.object({ submissionId: z.number() }))
       .query(async ({ ctx, input }) => {
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Service temporarily unavailable" });
 
         const submissions = await db
           .select()
@@ -257,7 +227,7 @@ export const appRouter = router({
 
     /** Get available models list */
     getAvailableModels: adminProcedure.query(() => {
-      return AVAILABLE_MODELS;
+      return APP_CONFIG.availableModels;
     }),
   }),
 });

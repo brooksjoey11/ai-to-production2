@@ -2,28 +2,16 @@ import { trpc } from "@/lib/trpc";
 import { useState, useCallback, useRef, useMemo } from "react";
 import { Upload, Loader2, Clock, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
+import { APP_CONFIG } from "@shared/config";
 
-const LANGUAGES = [
-  "javascript", "typescript", "python", "java", "csharp", "go",
-  "rust", "ruby", "php", "swift", "kotlin", "c", "cpp", "sql",
-  "html", "css", "shell", "other",
-] as const;
-
+const LANGUAGES = APP_CONFIG.supportedLanguages;
 type Language = (typeof LANGUAGES)[number];
 
-interface PipelineResult {
-  submissionId: number;
-  forensicDossier: string;
-  rebuiltCode: string;
-  qualityReport: string;
-  tokensUsed: number;
+export interface CodeSubmissionProps {
+  onSubmitted: (data: { submissionId: number; jobId: string }) => void;
 }
 
-interface CodeSubmissionProps {
-  onResult: (result: PipelineResult) => void;
-}
-
-export default function CodeSubmission({ onResult }: CodeSubmissionProps) {
+export default function CodeSubmission({ onSubmitted }: CodeSubmissionProps) {
   const [code, setCode] = useState("");
   const [language, setLanguage] = useState<Language>("javascript");
   const [comments, setComments] = useState("");
@@ -37,9 +25,9 @@ export default function CodeSubmission({ onResult }: CodeSubmissionProps) {
 
   const submitMutation = trpc.code.submit.useMutation({
     onSuccess: (data) => {
-      onResult(data);
+      onSubmitted({ submissionId: data.submissionId, jobId: data.jobId });
       rateLimitQuery.refetch();
-      toast.success("Analysis complete!");
+      toast.success("Code submitted! Analysis is running...");
     },
     onError: (error) => {
       toast.error(error.message);
@@ -55,6 +43,14 @@ export default function CodeSubmission({ onResult }: CodeSubmissionProps) {
 
   const handleSubmit = useCallback(() => {
     if (!canSubmit) return;
+
+    // Client-side code size check
+    const codeBytes = new Blob([code.trim()]).size;
+    if (codeBytes > APP_CONFIG.maxCodeSizeBytes) {
+      toast.error(`Code exceeds maximum size of ${Math.round(APP_CONFIG.maxCodeSizeBytes / 1000)}KB`);
+      return;
+    }
+
     submitMutation.mutate({
       code: code.trim(),
       language,
@@ -75,8 +71,8 @@ export default function CodeSubmission({ onResult }: CodeSubmissionProps) {
   }, []);
 
   const readFile = (file: File) => {
-    if (file.size > 100000) {
-      toast.error("File too large (100KB max)");
+    if (file.size > APP_CONFIG.maxCodeSizeBytes) {
+      toast.error(`File too large (${Math.round(APP_CONFIG.maxCodeSizeBytes / 1000)}KB max)`);
       return;
     }
     const reader = new FileReader();
@@ -108,7 +104,7 @@ export default function CodeSubmission({ onResult }: CodeSubmissionProps) {
           <div className={`px-3 py-1 border-2 border-black font-mono text-sm font-bold ${
             (rateLimit?.remaining ?? 5) === 0 ? "bg-black text-white" : "bg-white text-black"
           }`}>
-            {rateLimit?.remaining ?? "..."} / {rateLimit?.total ?? 5}
+            {rateLimit?.remaining ?? "..."} / {rateLimit?.total ?? APP_CONFIG.maxDailySubmissions}
           </div>
           <span className="font-mono text-xs uppercase tracking-wider">
             SUBMISSIONS REMAINING
@@ -212,7 +208,7 @@ export default function CodeSubmission({ onResult }: CodeSubmissionProps) {
         {isSubmitting ? (
           <>
             <Loader2 className="size-5 animate-spin" />
-            ANALYZING... THIS MAY TAKE A MOMENT
+            SUBMITTING...
           </>
         ) : (
           <>

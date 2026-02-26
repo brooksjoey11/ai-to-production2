@@ -1,4 +1,4 @@
-import { decimal, int, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { decimal, index, int, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -20,6 +20,7 @@ export type InsertUser = typeof users.$inferInsert;
 
 /**
  * Code submissions from users.
+ * Indexed on (userId, createdAt) for efficient history queries.
  */
 export const codeSubmissions = mysqlTable("code_submissions", {
   id: int("id").autoincrement().primaryKey(),
@@ -28,13 +29,16 @@ export const codeSubmissions = mysqlTable("code_submissions", {
   language: varchar("language", { length: 50 }).notNull(),
   userComments: text("userComments"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_submissions_user_date").on(table.userId, table.createdAt),
+]);
 
 export type CodeSubmission = typeof codeSubmissions.$inferSelect;
 export type InsertCodeSubmission = typeof codeSubmissions.$inferInsert;
 
 /**
  * Pipeline results for each submission (forensic, rebuilt, quality).
+ * Indexed on submissionId for efficient lookups.
  */
 export const pipelineResults = mysqlTable("pipeline_results", {
   id: int("id").autoincrement().primaryKey(),
@@ -45,7 +49,9 @@ export const pipelineResults = mysqlTable("pipeline_results", {
   tokensUsed: int("tokensUsed"),
   estimatedCost: decimal("estimatedCost", { precision: 10, scale: 6 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_results_submission").on(table.submissionId),
+]);
 
 export type PipelineResult = typeof pipelineResults.$inferSelect;
 export type InsertPipelineResult = typeof pipelineResults.$inferInsert;
@@ -79,7 +85,9 @@ export type ModelConfig = typeof modelConfig.$inferSelect;
 export type InsertModelConfig = typeof modelConfig.$inferInsert;
 
 /**
- * Rate limits per user (5 submissions/day, resets at UTC midnight).
+ * Rate limits table (DEPRECATED - kept for backwards compatibility).
+ * Rate limiting is now handled by Redis atomic counters.
+ * This table can be safely dropped in a future migration.
  */
 export const rateLimits = mysqlTable("rate_limits", {
   id: int("id").autoincrement().primaryKey(),

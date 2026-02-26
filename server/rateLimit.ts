@@ -1,8 +1,8 @@
-import { eq } from "drizzle-orm";
-import { getDb } from "./db";
-import { rateLimits } from "../drizzle/schema";
+import { getRedis, isRedisAvailable } from "./redis";
+import logger from "./logger";
+import { APP_CONFIG } from "@shared/config";
 
-const MAX_DAILY_SUBMISSIONS = 5;
+const RATE_LIMIT_PREFIX = "atp:ratelimit:";
 
 export interface RateLimitInfo {
   remaining: number;
@@ -10,142 +10,139 @@ export interface RateLimitInfo {
   resetAt: Date;
 }
 
+// ─── In-memory fallback (used when Redis is unavailable) ───
+interface MemoryRateEntry {
+  count: number;
+  resetAt: number; // epoch ms
+}
+const memoryRateLimits: Map<string, MemoryRateEntry> = new Map();
+
 /**
  * Get the next UTC midnight from now.
  */
 function getNextMidnightUTC(): Date {
   const now = new Date();
-  const tomorrow = new Date(Date.UTC(
+  return new Date(Date.UTC(
     now.getUTCFullYear(),
     now.getUTCMonth(),
     now.getUTCDate() + 1,
     0, 0, 0, 0
   ));
-  return tomorrow;
 }
 
 /**
- * Check if the reset timestamp has passed (i.e. it's a new day).
+ * Get seconds until next UTC midnight.
  */
-function isExpired(resetTimestamp: Date): boolean {
-  return new Date() >= resetTimestamp;
+function secondsUntilMidnightUTC(): number {
+  const now = Date.now();
+  const midnight = getNextMidnightUTC().getTime();
+  return Math.max(1, Math.ceil((midnight - now) / 1000));
 }
 
 /**
- * Get rate limit info for a user.
+ * Redis key for a user's daily rate limit.
+ */
+function rateLimitKey(userId: number): string {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  return `${RATE_LIMIT_PREFIX}${userId}:${today}`;
+}
+
+/**
+ * Get rate limit info for a user using Redis (or in-memory fallback).
  */
 export async function getRateLimitInfo(userId: number): Promise<RateLimitInfo> {
-  const db = await getDb();
-  if (!db) {
-    return { remaining: MAX_DAILY_SUBMISSIONS, total: MAX_DAILY_SUBMISSIONS, resetAt: getNextMidnightUTC() };
+  const max = APP_CONFIG.maxDailySubmissions;
+  const resetAt = getNextMidnightUTC();
+
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    try {
+      const key = rateLimitKey(userId);
+      const count = await redis.get(key);
+      const used = count ? parseInt(count, 10) : 0;
+      return {
+        remaining: Math.max(0, max - used),
+        total: max,
+        resetAt,
+      };
+    } catch (err) {
+      logger.warn({ err: (err as Error).message, userId }, "Redis rate limit GET failed, using fallback");
+    }
   }
 
-  const records = await db
-    .select()
-    .from(rateLimits)
-    .where(eq(rateLimits.userId, userId))
-    .limit(1);
-
-  if (records.length === 0) {
-    return {
-      remaining: MAX_DAILY_SUBMISSIONS,
-      total: MAX_DAILY_SUBMISSIONS,
-      resetAt: getNextMidnightUTC(),
-    };
+  // In-memory fallback
+  const memKey = rateLimitKey(userId);
+  const entry = memoryRateLimits.get(memKey);
+  if (!entry || Date.now() >= entry.resetAt) {
+    return { remaining: max, total: max, resetAt };
   }
-
-  const record = records[0];
-
-  // If the reset timestamp has passed, the counter resets
-  if (isExpired(record.resetTimestamp)) {
-    return {
-      remaining: MAX_DAILY_SUBMISSIONS,
-      total: MAX_DAILY_SUBMISSIONS,
-      resetAt: getNextMidnightUTC(),
-    };
-  }
-
-  const remaining = Math.max(0, MAX_DAILY_SUBMISSIONS - record.dailyCount);
   return {
-    remaining,
-    total: MAX_DAILY_SUBMISSIONS,
-    resetAt: record.resetTimestamp,
+    remaining: Math.max(0, max - entry.count),
+    total: max,
+    resetAt: new Date(entry.resetAt),
   };
 }
 
 /**
  * Consume one rate limit token. Returns true if allowed, false if limit exceeded.
- * Uses upsert to handle concurrent requests safely.
+ * Uses Redis INCR for atomic counter (or in-memory fallback).
  */
 export async function consumeRateLimit(userId: number): Promise<{ allowed: boolean; info: RateLimitInfo }> {
-  const db = await getDb();
-  if (!db) {
-    return {
-      allowed: true,
-      info: { remaining: MAX_DAILY_SUBMISSIONS - 1, total: MAX_DAILY_SUBMISSIONS, resetAt: getNextMidnightUTC() },
-    };
+  const max = APP_CONFIG.maxDailySubmissions;
+  const resetAt = getNextMidnightUTC();
+  const ttl = secondsUntilMidnightUTC();
+
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    try {
+      const key = rateLimitKey(userId);
+      // Atomic increment + set expiry
+      const newCount = await redis.incr(key);
+      if (newCount === 1) {
+        // First request today, set expiry to midnight UTC
+        await redis.expire(key, ttl);
+      }
+
+      if (newCount > max) {
+        return {
+          allowed: false,
+          info: { remaining: 0, total: max, resetAt },
+        };
+      }
+
+      return {
+        allowed: true,
+        info: { remaining: max - newCount, total: max, resetAt },
+      };
+    } catch (err) {
+      logger.warn({ err: (err as Error).message, userId }, "Redis rate limit INCR failed, using fallback");
+    }
   }
 
-  const records = await db
-    .select()
-    .from(rateLimits)
-    .where(eq(rateLimits.userId, userId))
-    .limit(1);
+  // In-memory fallback
+  const memKey = rateLimitKey(userId);
+  let entry = memoryRateLimits.get(memKey);
 
-  const nextMidnight = getNextMidnightUTC();
-
-  if (records.length === 0) {
-    // First submission ever - create record with count 1
-    await db.insert(rateLimits).values({
-      userId,
-      dailyCount: 1,
-      resetTimestamp: nextMidnight,
-    });
-    return {
-      allowed: true,
-      info: { remaining: MAX_DAILY_SUBMISSIONS - 1, total: MAX_DAILY_SUBMISSIONS, resetAt: nextMidnight },
-    };
+  if (!entry || Date.now() >= entry.resetAt) {
+    entry = { count: 0, resetAt: resetAt.getTime() };
   }
 
-  const record = records[0];
+  entry.count += 1;
+  memoryRateLimits.set(memKey, entry);
 
-  // If expired, reset counter
-  if (isExpired(record.resetTimestamp)) {
-    await db
-      .update(rateLimits)
-      .set({ dailyCount: 1, resetTimestamp: nextMidnight })
-      .where(eq(rateLimits.id, record.id));
-    return {
-      allowed: true,
-      info: { remaining: MAX_DAILY_SUBMISSIONS - 1, total: MAX_DAILY_SUBMISSIONS, resetAt: nextMidnight },
-    };
-  }
-
-  // Check if limit exceeded
-  if (record.dailyCount >= MAX_DAILY_SUBMISSIONS) {
+  if (entry.count > max) {
     return {
       allowed: false,
-      info: {
-        remaining: 0,
-        total: MAX_DAILY_SUBMISSIONS,
-        resetAt: record.resetTimestamp,
-      },
+      info: { remaining: 0, total: max, resetAt: new Date(entry.resetAt) },
     };
   }
-
-  // Increment counter
-  const newCount = record.dailyCount + 1;
-  await db
-    .update(rateLimits)
-    .set({ dailyCount: newCount })
-    .where(eq(rateLimits.id, record.id));
 
   return {
     allowed: true,
     info: {
-      remaining: MAX_DAILY_SUBMISSIONS - newCount,
-      total: MAX_DAILY_SUBMISSIONS,
-      resetAt: record.resetTimestamp,
+      remaining: max - entry.count,
+      total: max,
+      resetAt: new Date(entry.resetAt),
     },
   };
 }

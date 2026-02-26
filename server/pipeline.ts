@@ -1,5 +1,6 @@
 import { invokeLLM } from "./_core/llm";
-import { getPrompt } from "./configService";
+import { getPrompt, getModel } from "./configService";
+import logger from "./logger";
 
 export interface PipelineInput {
   code: string;
@@ -27,7 +28,9 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
 
   // ─── Step 1: Forensic Analysis ───
   const forensicPrompt = await getPrompt("forensic");
+  const forensicModel = await getModel("forensic");
   const forensicUserMsg = buildForensicUserMessage(input);
+  logger.info({ step: "forensic", model: forensicModel }, "Pipeline step starting");
 
   const forensicResult = await invokeLLM({
     messages: [
@@ -41,7 +44,9 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
 
   // ─── Step 2: Code Rebuilder ───
   const rebuilderPrompt = await getPrompt("rebuilder");
+  const rebuilderModel = await getModel("rebuilder");
   const rebuilderUserMsg = buildRebuilderUserMessage(input, forensicDossier);
+  logger.info({ step: "rebuilder", model: rebuilderModel }, "Pipeline step starting");
 
   const rebuilderResult = await invokeLLM({
     messages: [
@@ -55,7 +60,9 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
 
   // ─── Step 3: Quality Report ───
   const qualityPrompt = await getPrompt("quality");
+  const qualityModel = await getModel("quality");
   const qualityUserMsg = buildQualityUserMessage(input, forensicDossier, rebuiltCode);
+  logger.info({ step: "quality", model: qualityModel }, "Pipeline step starting");
 
   const qualityResult = await invokeLLM({
     messages: [

@@ -51,9 +51,49 @@
 - [x] Save buttons with loading states
 
 ## Testing
-- [x] Backend vitest for pipeline, rate limiting, admin routes (19 tests passing)
+- [x] Backend vitest for pipeline, rate limiting, admin routes (39 tests passing)
 - [x] Auth logout test (existing)
 
 ## Integration
 - [x] End-to-end flow: login → submit code → view results
 - [x] Admin flow: login as admin → edit prompts/models → verify changes
+
+## Production Readiness - Async Pipeline
+- [x] Install BullMQ and ioredis dependencies
+- [x] Create Redis connection service with graceful fallback
+- [x] Replace synchronous pipeline with BullMQ job queue
+- [x] Modify submission endpoint to return 202 with jobId
+- [x] Create code.getJobStatus(jobId) tRPC endpoint for polling
+- [x] Implement retries with exponential backoff and dead-letter queue
+
+## Production Readiness - Redis Rate Limiting & Caching
+- [x] Replace DB rate limiter with Redis atomic counters
+- [x] Make MAX_DAILY_SUBMISSIONS configurable via env
+- [x] Cache system prompts and model config in Redis (5-min TTL)
+- [x] Invalidate cache immediately on admin updates
+- [x] In-memory fallback caches with Redis primary (graceful degradation)
+
+## Production Readiness - Security Hardening
+- [x] Fix cookie options: secure: true, sameSite: 'none', proxy-aware
+- [x] Sanitize all error messages (no stack traces or DB details)
+- [x] Enforce 100KB code limit globally + 1MB body-parser limit
+- [x] CSRF protection via SameSite cookie + tRPC mutation pattern
+
+## Production Readiness - Observability
+- [x] Replace console.* with Pino structured JSON logger
+- [x] Add request logging middleware (method, path, status, duration)
+- [x] Expose /health endpoint checking DB, Redis, LLM reachability
+- [x] Expose /metrics endpoint with Prometheus counters/histograms
+
+## Production Readiness - Database Optimizations
+- [x] Add index on code_submissions (userId, createdAt)
+- [x] Verify pipeline_results.submissionId is indexed
+- [x] rate_limits table deprecated (kept for backward compat, Redis primary)
+
+## Production Readiness - Testing & Code Quality
+- [x] Integration tests: submission → job completion → retrieval
+- [x] Integration tests: concurrent rate limit checks
+- [x] Integration tests: admin prompt/model updates + cache invalidation
+- [x] Unit tests: rate limiter, config service, metrics, logger, job queue (39 tests)
+- [x] Remove ComponentShowcase from production builds
+- [x] Externalize all hardcoded numbers to shared/config.ts

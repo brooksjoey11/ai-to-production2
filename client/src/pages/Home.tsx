@@ -4,8 +4,8 @@ import Header from "@/components/Header";
 import CodeSubmission from "@/components/CodeSubmission";
 import ResultsDisplay from "@/components/ResultsDisplay";
 import { trpc } from "@/lib/trpc";
-import { useState, useCallback } from "react";
-import { Shield, Zap, FileSearch, ArrowRight } from "lucide-react";
+import { useState, useCallback, useEffect, useRef } from "react";
+import { Shield, Zap, FileSearch, ArrowRight, Loader2 } from "lucide-react";
 
 interface PipelineResult {
   submissionId: number;
@@ -18,13 +18,49 @@ interface PipelineResult {
 export default function Home() {
   const { user, isAuthenticated, loading } = useAuth();
   const [result, setResult] = useState<PipelineResult | null>(null);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [activeSubmissionId, setActiveSubmissionId] = useState<number | null>(null);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const handleResult = useCallback((data: PipelineResult) => {
-    setResult(data);
+  // Poll for job status when we have an active job
+  const jobStatusQuery = trpc.code.getJobStatus.useQuery(
+    { jobId: activeJobId! },
+    {
+      enabled: !!activeJobId,
+      refetchInterval: activeJobId ? 2000 : false,
+    }
+  );
+
+  // Handle job completion
+  useEffect(() => {
+    if (!jobStatusQuery.data || !activeJobId) return;
+
+    const status = jobStatusQuery.data;
+    if (status.status === "completed" && status.result) {
+      setResult({
+        submissionId: activeSubmissionId ?? 0,
+        forensicDossier: status.result.forensicDossier,
+        rebuiltCode: status.result.rebuiltCode,
+        qualityReport: status.result.qualityReport,
+        tokensUsed: status.result.tokensUsed,
+      });
+      setActiveJobId(null);
+      setActiveSubmissionId(null);
+    } else if (status.status === "failed") {
+      setActiveJobId(null);
+      setActiveSubmissionId(null);
+    }
+  }, [jobStatusQuery.data, activeJobId, activeSubmissionId]);
+
+  const handleSubmitted = useCallback((data: { submissionId: number; jobId: string }) => {
+    setActiveSubmissionId(data.submissionId);
+    setActiveJobId(data.jobId);
   }, []);
 
   const handleNewAnalysis = useCallback(() => {
     setResult(null);
+    setActiveJobId(null);
+    setActiveSubmissionId(null);
   }, []);
 
   if (loading) {
@@ -40,12 +76,23 @@ export default function Home() {
     );
   }
 
+  const isProcessing = !!activeJobId;
+  const jobStatus = jobStatusQuery.data?.status;
+
   return (
     <div className="min-h-screen flex flex-col bg-white">
       <Header />
 
       {!isAuthenticated ? (
         <LandingSection />
+      ) : isProcessing ? (
+        <main className="flex-1 container py-8">
+          <ProcessingView
+            jobStatus={jobStatus ?? "waiting"}
+            error={jobStatusQuery.data?.error}
+            onCancel={handleNewAnalysis}
+          />
+        </main>
       ) : result ? (
         <main className="flex-1 container py-8">
           <ResultsDisplay result={result} onNewAnalysis={handleNewAnalysis} />
@@ -60,7 +107,7 @@ export default function Home() {
               Submit your code for forensic analysis, automated repair, and quality assessment.
             </p>
           </div>
-          <CodeSubmission onResult={handleResult} />
+          <CodeSubmission onSubmitted={handleSubmitted} />
         </main>
       )}
 
@@ -71,6 +118,75 @@ export default function Home() {
           </p>
         </div>
       </footer>
+    </div>
+  );
+}
+
+function ProcessingView({
+  jobStatus,
+  error,
+  onCancel,
+}: {
+  jobStatus: string;
+  error?: string;
+  onCancel: () => void;
+}) {
+  const statusMessages: Record<string, string> = {
+    waiting: "JOB QUEUED — WAITING FOR AVAILABLE WORKER...",
+    active: "PIPELINE RUNNING — ANALYZING YOUR CODE...",
+    completed: "ANALYSIS COMPLETE — LOADING RESULTS...",
+    failed: "ANALYSIS FAILED",
+  };
+
+  const pipelineSteps = [
+    { label: "FORENSIC ANALYSIS", icon: FileSearch, active: jobStatus === "active" },
+    { label: "CODE REBUILDER", icon: Zap, active: false },
+    { label: "QUALITY CHECK", icon: Shield, active: false },
+  ];
+
+  return (
+    <div className="max-w-2xl mx-auto">
+      <div className="border-4 border-black p-8 text-center">
+        <div className="mb-6">
+          {jobStatus === "failed" ? (
+            <div className="bg-black text-white p-4 mb-4">
+              <p className="font-mono text-sm uppercase">{error ?? "An error occurred during analysis"}</p>
+            </div>
+          ) : (
+            <Loader2 className="size-12 animate-spin mx-auto mb-4" />
+          )}
+          <h2 className="text-2xl font-black uppercase tracking-tight">
+            {statusMessages[jobStatus] ?? "PROCESSING..."}
+          </h2>
+        </div>
+
+        {jobStatus !== "failed" && (
+          <div className="space-y-0 mb-6">
+            {pipelineSteps.map((step, i) => (
+              <div
+                key={step.label}
+                className={`flex items-center gap-4 border-2 border-black p-4 -mt-[2px] first:mt-0 ${
+                  jobStatus === "active" ? "bg-muted" : ""
+                }`}
+              >
+                <span className="font-mono text-lg font-bold">{String(i + 1).padStart(2, "0")}</span>
+                <step.icon className="size-5" />
+                <span className="font-bold uppercase tracking-wider text-sm">{step.label}</span>
+                {jobStatus === "active" && i === 0 && (
+                  <Loader2 className="size-4 animate-spin ml-auto" />
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <button
+          onClick={onCancel}
+          className="px-6 py-3 border-2 border-black font-bold uppercase tracking-widest text-xs hover:bg-black hover:text-white transition-colors"
+        >
+          {jobStatus === "failed" ? "TRY AGAIN" : "CANCEL"}
+        </button>
+      </div>
     </div>
   );
 }

@@ -225,3 +225,29 @@ export function invalidateModelCache(step?: string): void {
     }
   }
 }
+
+export async function getModelConfigForStep(step: string): Promise<{
+  selectedModel: string;
+  providerModelId: number | null;
+}> {
+  const db = await getDb();
+  if (!db) return { selectedModel: APP_CONFIG.defaultModel, providerModelId: null };
+
+  const record = await db
+    .select({
+      selectedModel: modelConfig.selectedModel,
+      providerModelId: modelConfig.providerModelId,
+    })
+    .from(modelConfig)
+    .where(eq(modelConfig.stepName, step as StepName))
+    .limit(1);
+
+  if (!record.length) {
+    return { selectedModel: APP_CONFIG.defaultModel, providerModelId: null };
+  }
+
+  return {
+    selectedModel: record[0].selectedModel,
+    providerModelId: record[0].providerModelId ?? null,
+  };
+}

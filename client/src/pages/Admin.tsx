@@ -6,6 +6,17 @@ import { toast } from "sonner";
 import { Save, Loader2, RefreshCw, Database } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { APP_CONFIG } from "@shared/config";
+import Operations from "./admin/Operations";
+import AuditLog from "./admin/AuditLog";
+import Metrics from "./admin/Metrics";
+import Providers from "./admin/Providers";
+import SystemConfig from "./admin/SystemConfig";
+import RateLimits from "./admin/RateLimits";
+import Users from "./admin/Users";
+import Backups from "./admin/Backups";
+import Chaos from "./admin/Chaos";
+import Canary from "./admin/Canary";
+import Billing from "./admin/Billing";
 
 const PIPELINE_STEPS = ["forensic", "rebuilder", "quality"] as const;
 type StepName = (typeof PIPELINE_STEPS)[number];
@@ -75,9 +86,75 @@ export default function Admin() {
             </TabsTrigger>
             <TabsTrigger
               value="history"
-              className="flex-1 px-4 py-3 border-2 border-black font-bold uppercase tracking-wider text-xs rounded-none data-[state=active]:bg-black data-[state=active]:text-white"
+              className="flex-1 px-4 py-3 border-2 border-black font-bold uppercase tracking-wider text-xs rounded-none data-[state=active]:bg-black data-[state=active]:text-white -mr-[2px]"
             >
               SUBMISSIONS
+            </TabsTrigger>
+            <TabsTrigger
+              value="providers"
+              className="flex-1 px-4 py-3 border-2 border-black font-bold uppercase tracking-wider text-xs rounded-none data-[state=active]:bg-black data-[state=active]:text-white -mr-[2px]"
+            >
+              API PROVIDERS
+            </TabsTrigger>
+            <TabsTrigger
+              value="operations"
+              className="flex-1 px-4 py-3 border-2 border-black font-bold uppercase tracking-wider text-xs rounded-none data-[state=active]:bg-black data-[state=active]:text-white -mr-[2px]"
+            >
+              OPERATIONS
+            </TabsTrigger>
+            <TabsTrigger
+              value="audit"
+              className="flex-1 px-4 py-3 border-2 border-black font-bold uppercase tracking-wider text-xs rounded-none data-[state=active]:bg-black data-[state=active]:text-white -mr-[2px]"
+            >
+              AUDIT LOG
+            </TabsTrigger>
+            <TabsTrigger
+              value="metrics"
+              className="flex-1 px-4 py-3 border-2 border-black font-bold uppercase tracking-wider text-xs rounded-none data-[state=active]:bg-black data-[state=active]:text-white -mr-[2px]"
+            >
+              METRICS
+            </TabsTrigger>
+            <TabsTrigger
+              value="system"
+              className="flex-1 px-4 py-3 border-2 border-black font-bold uppercase tracking-wider text-xs rounded-none data-[state=active]:bg-black data-[state=active]:text-white -mr-[2px]"
+            >
+              SYSTEM CONFIG
+            </TabsTrigger>
+            <TabsTrigger
+              value="rate-limits"
+              className="flex-1 px-4 py-3 border-2 border-black font-bold uppercase tracking-wider text-xs rounded-none data-[state=active]:bg-black data-[state=active]:text-white -mr-[2px]"
+            >
+              RATE LIMITS
+            </TabsTrigger>
+            <TabsTrigger
+              value="users"
+              className="flex-1 px-4 py-3 border-2 border-black font-bold uppercase tracking-wider text-xs rounded-none data-[state=active]:bg-black data-[state=active]:text-white -mr-[2px]"
+            >
+              USERS
+            </TabsTrigger>
+            <TabsTrigger
+              value="backups"
+              className="flex-1 px-4 py-3 border-2 border-black font-bold uppercase tracking-wider text-xs rounded-none data-[state=active]:bg-black data-[state=active]:text-white -mr-[2px]"
+            >
+              BACKUPS
+            </TabsTrigger>
+            <TabsTrigger
+              value="chaos"
+              className="flex-1 px-4 py-3 border-2 border-black font-bold uppercase tracking-wider text-xs rounded-none data-[state=active]:bg-black data-[state=active]:text-white -mr-[2px]"
+            >
+              CHAOS
+            </TabsTrigger>
+            <TabsTrigger
+              value="canary"
+              className="flex-1 px-4 py-3 border-2 border-black font-bold uppercase tracking-wider text-xs rounded-none data-[state=active]:bg-black data-[state=active]:text-white -mr-[2px]"
+            >
+              CANARY
+            </TabsTrigger>
+            <TabsTrigger
+              value="billing"
+              className="flex-1 px-4 py-3 border-2 border-black font-bold uppercase tracking-wider text-xs rounded-none data-[state=active]:bg-black data-[state=active]:text-white"
+            >
+              BILLING
             </TabsTrigger>
           </TabsList>
 
@@ -90,6 +167,17 @@ export default function Admin() {
           <TabsContent value="history">
             <SubmissionHistory />
           </TabsContent>
+          <TabsContent value="providers"><Providers /></TabsContent>
+          <TabsContent value="operations"><Operations /></TabsContent>
+          <TabsContent value="audit"><AuditLog /></TabsContent>
+          <TabsContent value="metrics"><Metrics /></TabsContent>
+          <TabsContent value="system"><SystemConfig /></TabsContent>
+          <TabsContent value="rate-limits"><RateLimits /></TabsContent>
+          <TabsContent value="users"><Users /></TabsContent>
+          <TabsContent value="backups"><Backups /></TabsContent>
+          <TabsContent value="chaos"><Chaos /></TabsContent>
+          <TabsContent value="canary"><Canary /></TabsContent>
+          <TabsContent value="billing"><Billing /></TabsContent>
         </Tabs>
       </main>
 

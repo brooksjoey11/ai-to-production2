@@ -5,14 +5,13 @@ const ALGORITHM = "aes-256-gcm";
 
 function getKey(): Buffer {
   if (!ENCRYPTION_KEY) {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error("ENCRYPTION_KEY environment variable is required in production");
-    }
-    // Development fallback only
-    return Buffer.from("dev-key-change-in-production-000", "utf8");
+    throw new Error("ENCRYPTION_KEY environment variable is required");
   }
-  const key = ENCRYPTION_KEY.padEnd(32, "0").slice(0, 32);
-  return Buffer.from(key, "utf8");
+  const raw = Buffer.from(ENCRYPTION_KEY, "utf8");
+  if (raw.length < 32) {
+    throw new Error("ENCRYPTION_KEY must be at least 32 bytes");
+  }
+  return raw.slice(0, 32);
 }
 
 export async function encryptApiKey(plaintext: string): Promise<string> {

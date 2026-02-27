@@ -8,7 +8,7 @@ export default function Canary() {
         enabled: false,
         percent: 5,
         model: '',
-        provider: ''
+        provider: 0
     });
 
     const canaryConfigQuery = trpc.admin.getCanaryConfig.useQuery();
@@ -16,7 +16,7 @@ export default function Canary() {
     const updateCanary = trpc.admin.updateCanaryConfig.useMutation();
 
     const providers = providersQuery.data?.providers || [];
-    const selectedProvider = providers.find(p => String(p.id) === String(config.provider));
+    const selectedProvider = providers.find(p => p.id === config.provider);
     const models = selectedProvider?.models || [];
 
     return (
@@ -74,11 +74,11 @@ export default function Canary() {
                             <label className="text-sm font-medium mb-1 block">Provider</label>
                             <select
                                 value={config.provider}
-                                onChange={(e) => setConfig({ ...config, provider: e.target.value, model: '' })}
+                                onChange={(e) => setConfig({ ...config, provider: Number(e.target.value), model: '' })}
                                 className="w-full px-3 py-2 border-2 border-black"
                                 disabled={!config.enabled}
                             >
-                                <option value="">Select Provider</option>
+                                <option value={0}>Select Provider</option>
                                 {providers.map(p => (
                                     <option key={p.id} value={p.id}>{p.name}</option>
                                 ))}
@@ -91,7 +91,7 @@ export default function Canary() {
                                 value={config.model}
                                 onChange={(e) => setConfig({ ...config, model: e.target.value })}
                                 className="w-full px-3 py-2 border-2 border-black"
-                                disabled={!config.provider || !config.enabled}
+                            disabled={!config.provider || !config.enabled}
                             >
                                 <option value="">Select Model</option>
                                 {models.filter(m => m.isEnabled).map(m => (

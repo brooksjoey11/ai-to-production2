@@ -21,6 +21,7 @@ import { metrics } from "./metrics";
 import logger from "./logger";
 import { getRedis, isRedisAvailable } from "./redis";
 import { encryptApiKey, decryptApiKey } from "./encryption";
+import type { Request } from "express";
 
 // ─── Helper: Log admin action to audit_logs ───
 async function logAdminAction(
@@ -30,7 +31,7 @@ async function logAdminAction(
   entityId: string | number | null,
   beforeValue: unknown,
   afterValue: unknown,
-  req?: { ip?: string; headers?: Record<string, string | string[] | undefined> }
+  req?: Request
 ): Promise<void> {
   try {
     const db = await getDb();
@@ -312,7 +313,7 @@ export const appRouter = router({
         }
 
         await db.update(deadLetterQueue).set({ status: 'retried' }).where(eq(deadLetterQueue.id, input.jobId));
-        await logAdminAction(ctx.user.id, 'RETRY_JOB', 'dead_letter', input.jobId, null, null, ctx.req as any);
+        await logAdminAction(ctx.user.id, 'RETRY_JOB', 'dead_letter', input.jobId, null, null, ctx.req);
 
         return { success: true };
       }),
@@ -324,7 +325,7 @@ export const appRouter = router({
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
 
         await db.delete(deadLetterQueue).where(eq(deadLetterQueue.id, input.jobId));
-        await logAdminAction(ctx.user.id, 'DELETE_JOB', 'dead_letter', input.jobId, null, null, ctx.req as any);
+        await logAdminAction(ctx.user.id, 'DELETE_JOB', 'dead_letter', input.jobId, null, null, ctx.req);
 
         return { success: true };
       }),
@@ -500,7 +501,7 @@ export const appRouter = router({
         });
 
         const providerId = result[0].insertId;
-        await logAdminAction(ctx.user.id, 'ADD_PROVIDER', 'provider', providerId, null, input, ctx.req as any);
+        await logAdminAction(ctx.user.id, 'ADD_PROVIDER', 'provider', providerId, null, input, ctx.req);
 
         return { success: true, providerId };
       }),
@@ -533,7 +534,7 @@ export const appRouter = router({
           });
         }
 
-        await logAdminAction(ctx.user.id, 'UPDATE_PROVIDER', 'provider', input.providerId, null, { keyUpdated: true }, ctx.req as any);
+        await logAdminAction(ctx.user.id, 'UPDATE_PROVIDER', 'provider', input.providerId, null, { keyUpdated: true }, ctx.req);
         return { success: true };
       }),
 
@@ -589,7 +590,7 @@ export const appRouter = router({
           errorMessage: success ? null : message,
         });
 
-        await logAdminAction(ctx.user.id, 'TEST_CONNECTION', 'provider', input.providerId, null, { success, message, responseTime }, ctx.req as any);
+        await logAdminAction(ctx.user.id, 'TEST_CONNECTION', 'provider', input.providerId, null, { success, message, responseTime }, ctx.req);
         return { success, message, responseTime };
       }),
 
@@ -637,7 +638,7 @@ export const appRouter = router({
           }
         }
 
-        await logAdminAction(ctx.user.id, 'SYNC_MODELS', 'provider', input.providerId, null, { count: insertedCount }, ctx.req as any);
+        await logAdminAction(ctx.user.id, 'SYNC_MODELS', 'provider', input.providerId, null, { count: insertedCount }, ctx.req);
         return { success: true, count: insertedCount };
       }),
 
@@ -652,7 +653,7 @@ export const appRouter = router({
 
         const newStatus = !current[0].isActive;
         await db.update(apiProviders).set({ isActive: newStatus }).where(eq(apiProviders.id, input.providerId));
-        await logAdminAction(ctx.user.id, 'TOGGLE_PROVIDER', 'provider', input.providerId, { isActive: current[0].isActive }, { isActive: newStatus }, ctx.req as any);
+        await logAdminAction(ctx.user.id, 'TOGGLE_PROVIDER', 'provider', input.providerId, { isActive: current[0].isActive }, { isActive: newStatus }, ctx.req);
         return { success: true };
       }),
 
@@ -696,7 +697,7 @@ export const appRouter = router({
           try { await redis.del(`runtime:${input.key}`); } catch (e) { logger.warn({ err: e }, "Redis cache invalidation failed"); }
         }
 
-        await logAdminAction(ctx.user.id, 'UPDATE_CONFIG', 'runtime_config', input.key, before[0]?.value ?? null, input.value, ctx.req as any);
+        await logAdminAction(ctx.user.id, 'UPDATE_CONFIG', 'runtime_config', input.key, before[0]?.value ?? null, input.value, ctx.req);
         return { success: true };
       }),
 
@@ -755,7 +756,7 @@ export const appRouter = router({
           await db.insert(userRateOverrides).values({ userId: input.userId, limit: input.overrideLimit, updatedBy: ctx.user.id });
         }
 
-        await logAdminAction(ctx.user.id, 'UPDATE_USER', 'user', input.userId, null, { rateLimit: input.overrideLimit }, ctx.req as any);
+        await logAdminAction(ctx.user.id, 'UPDATE_USER', 'user', input.userId, null, { rateLimit: input.overrideLimit }, ctx.req);
         return { success: true };
       }),
 
@@ -804,7 +805,7 @@ export const appRouter = router({
         if (!user.length) throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
 
         await db.delete(users).where(eq(users.id, input.userId));
-        await logAdminAction(ctx.user.id, 'DELETE_USER', 'user', input.userId, { email: user[0].email }, null, ctx.req as any);
+        await logAdminAction(ctx.user.id, 'DELETE_USER', 'user', input.userId, { email: user[0].email }, null, ctx.req);
         return { success: true };
       }),
 
@@ -863,9 +864,9 @@ export const appRouter = router({
     getCanaryConfig: adminProcedure
       .query(async () => {
         const db = await getDb();
-        if (!db) return { enabled: false, percent: 0, model: '', provider: '' };
+        if (!db) return { enabled: false, percent: 0, model: '', provider: 0 };
         const config = await db.select().from(runtimeConfig).where(eq(runtimeConfig.key, 'canary_config')).limit(1);
-        if (!config.length) return { enabled: false, percent: 0, model: '', provider: '' };
+        if (!config.length) return { enabled: false, percent: 0, model: '', provider: 0 };
         const value = config[0].value as any;
         return value || { enabled: false, percent: 0, model: '', provider: '' };
       }),
@@ -875,7 +876,7 @@ export const appRouter = router({
         enabled: z.boolean(),
         percent: z.number().min(0).max(100),
         model: z.string(),
-        provider: z.string(),
+        provider: z.number(),
       }))
       .mutation(async ({ input }) => {
         const db = await getDb();

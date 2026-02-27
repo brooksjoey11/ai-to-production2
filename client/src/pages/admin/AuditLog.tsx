@@ -166,7 +166,7 @@ export default function AuditLog() {
                                         <TableRow key={`${log.id}-expanded`} className="bg-gray-50">
                                             <TableCell colSpan={7} className="p-4">
                                                 <div className="space-y-4">
-                                                    {log.beforeValue && (
+                                                    {!!log.beforeValue && (
                                                         <div>
                                                             <span className="text-xs font-bold uppercase tracking-wider">Before:</span>
                                                             <pre className="mt-1 p-2 bg-white border rounded text-xs font-mono overflow-auto max-h-40">
@@ -174,7 +174,7 @@ export default function AuditLog() {
                                                             </pre>
                                                         </div>
                                                     )}
-                                                    {log.afterValue && (
+                                                    {!!log.afterValue && (
                                                         <div>
                                                             <span className="text-xs font-bold uppercase tracking-wider">After:</span>
                                                             <pre className="mt-1 p-2 bg-white border rounded text-xs font-mono overflow-auto max-h-40">

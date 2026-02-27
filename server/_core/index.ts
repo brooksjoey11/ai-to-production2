@@ -4,7 +4,7 @@ import cookieParser from "cookie-parser";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerOAuthRoutes } from "./oauth";
+import { registerGoogleOAuth } from "./googleOAuth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
@@ -69,8 +69,8 @@ async function startServer() {
   // Initialize BullMQ job queue
   initJobQueue();
 
-  // OAuth callback under /api/oauth/callback
-  registerOAuthRoutes(app);
+  // Google OAuth routes under /api/auth/google
+  registerGoogleOAuth(app);
 
   // tRPC API
   app.use(

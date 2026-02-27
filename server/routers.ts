@@ -466,7 +466,7 @@ export const appRouter = router({
               lastTestStatus: apiKey[0].lastTestStatus,
               lastTestMessage: apiKey[0].lastTestMessage,
               hasKey: true,
-              keyValue: undefined as undefined,
+              keyValue: undefined,
             } : null,
             models,
           };
@@ -693,7 +693,7 @@ export const appRouter = router({
 
         const redis = getRedis();
         if (redis && isRedisAvailable()) {
-          try { await redis.del(`runtime:${input.key}`); } catch { /* ignore */ }
+          try { await redis.del(`runtime:${input.key}`); } catch (e) { logger.warn({ err: e }, "Redis cache invalidation failed"); }
         }
 
         await logAdminAction(ctx.user.id, 'UPDATE_CONFIG', 'runtime_config', input.key, before[0]?.value ?? null, input.value, ctx.req as any);
@@ -716,7 +716,8 @@ export const appRouter = router({
 
         const conditions = [];
         if (input.search) {
-          conditions.push(or(like(users.email, `%${input.search}%`), like(users.name as any, `%${input.search}%`)));
+          const escaped = input.search.replace(/[%_\\]/g, '\\$&');
+          conditions.push(or(like(users.email, `%${escaped}%`), like(users.name as any, `%${escaped}%`)));
         }
 
         const userList = await db.select({
@@ -767,7 +768,8 @@ export const appRouter = router({
 
         const conditions = [];
         if (input.search) {
-          conditions.push(or(like(users.email, `%${input.search}%`), like(users.name as any, `%${input.search}%`)));
+          const escaped = input.search.replace(/[%_\\]/g, '\\$&');
+          conditions.push(or(like(users.email, `%${escaped}%`), like(users.name as any, `%${escaped}%`)));
         }
 
         const userList = await db.select({
@@ -900,7 +902,7 @@ export const appRouter = router({
           plan: 'free',
           status: 'active',
           currentPeriodStart: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
-          currentPeriodEnd: new Date(Date.now() + 0 * 24 * 60 * 60 * 1000).toISOString(),
+          currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
           usage: 0,
           estimatedCost: 0,
         }));

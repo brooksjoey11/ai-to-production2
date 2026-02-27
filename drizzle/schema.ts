@@ -1,4 +1,4 @@
-import { boolean, decimal, index, int, json, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { boolean, date, decimal, index, int, json, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -221,7 +221,7 @@ export const userRateOverrides = mysqlTable("user_rate_overrides", {
 export const dailyUsage = mysqlTable("daily_usage", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("user_id").notNull().references(() => users.id),
-  date: varchar("date", { length: 10 }).notNull(),
+  date: date("date").notNull(),
   count: int("count").default(0),
 });
 

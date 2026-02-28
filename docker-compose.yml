@@ -1,0 +1,54 @@
+version: "3.9"
+
+services:
+  mysql:
+    image: mysql:8
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: ai_to_production
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - mysql
+      - redis
+    environment:
+      DATABASE_URL: mysql://root:root@mysql:3306/ai_to_production
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: change_me
+      BUILT_IN_FORGE_API_URL: https://forge.manus.im
+      BUILT_IN_FORGE_API_KEY: change_me
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    command: node dist/server/index.js
+
+  worker:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - mysql
+      - redis
+    environment:
+      DATABASE_URL: mysql://root:root@mysql:3306/ai_to_production
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: change_me
+      BUILT_IN_FORGE_API_URL: https://forge.manus.im
+      BUILT_IN_FORGE_API_KEY: change_me
+      NODE_ENV: production
+    command: node dist/server/worker.js
+
+volumes:
+  mysql_data:

@@ -40,85 +40,128 @@ export interface JobStatusResult {
   error?: string;
 }
 
+type InitMode = "api" | "worker" | "both";
+
 let queue: Queue | null = null;
 let worker: Worker | null = null;
 
+function ensureQueue(): void {
+  if (queue) return;
+
+  const connection = { url: APP_CONFIG.redisUrl };
+
+  queue = new Queue(QUEUE_NAME, {
+    connection,
+    defaultJobOptions: {
+      attempts: APP_CONFIG.jobMaxRetries,
+      backoff: {
+        type: "exponential",
+        delay: APP_CONFIG.jobBackoffDelay,
+      },
+      removeOnComplete: { count: 1000 },
+      removeOnFail: { count: 500 },
+    },
+  });
+}
+
+function ensureWorker(): void {
+  if (worker) return;
+
+  const connection = { url: APP_CONFIG.redisUrl };
+
+  worker = new Worker(
+    QUEUE_NAME,
+    async (job: Job<PipelineJobData>) => {
+      logger.info({ jobId: job.id, submissionId: job.data.submissionId }, "Pipeline job started");
+      metrics.queueSize.dec();
+
+      const output = await runPipeline({
+        code: job.data.code,
+        language: job.data.language,
+        userComments: job.data.userComments,
+      } satisfies PipelineInput);
+
+      // Store results in DB
+      const db = await getDb();
+      if (db) {
+        await db.insert(pipelineResults).values({
+          submissionId: job.data.submissionId,
+          forensicDossier: output.forensicDossier,
+          rebuiltCode: output.rebuiltCode,
+          qualityReport: output.qualityReport,
+          tokensUsed: output.tokensUsed,
+        });
+      }
+
+      metrics.llmTokensTotal.inc(output.tokensUsed);
+
+      logger.info(
+        { jobId: job.id, submissionId: job.data.submissionId, tokens: output.tokensUsed },
+        "Pipeline job completed"
+      );
+
+      return output;
+    },
+    {
+      connection,
+      concurrency: APP_CONFIG.queueWorkerConcurrency,
+      limiter: {
+        max: APP_CONFIG.queueLimiterMax,
+        duration: APP_CONFIG.queueLimiterDurationMs,
+      },
+    }
+  );
+
+  worker.on("failed", (job, err) => {
+    logger.error({ jobId: job?.id, err: err.message }, "Pipeline job failed");
+  });
+
+  worker.on("error", (err) => {
+    logger.error({ err: err.message }, "Worker error");
+  });
+}
+
 /**
- * Initialize the BullMQ queue and worker.
+ * Initialize the BullMQ queue and/or worker.
+ * - mode "api": initialize queue only (for enqueue/status). No worker.
+ * - mode "worker": initialize worker (and queue if needed).
+ * - mode "both": initialize both (backward-compatible).
+ *
  * Falls back to synchronous in-memory processing if Redis is unavailable.
  */
-export function initJobQueue(): void {
+export function initJobQueue(mode: InitMode = "both"): void {
   if (!isRedisAvailable()) {
     logger.warn("Redis not available – pipeline jobs will run synchronously in-memory");
     return;
   }
 
   try {
-    const connection = { url: APP_CONFIG.redisUrl };
+    if (mode === "api") {
+      ensureQueue();
+      logger.info(
+        { queue: QUEUE_NAME },
+        "BullMQ queue initialized (api mode: worker disabled)"
+      );
+      return;
+    }
 
-    queue = new Queue(QUEUE_NAME, {
-      connection,
-      defaultJobOptions: {
-        attempts: APP_CONFIG.jobMaxRetries,
-        backoff: {
-          type: "exponential",
-          delay: APP_CONFIG.jobBackoffDelay,
+    if (mode === "worker") {
+      ensureQueue();
+      ensureWorker();
+      logger.info(
+        {
+          queue: QUEUE_NAME,
+          concurrency: APP_CONFIG.queueWorkerConcurrency,
+          limiterMax: APP_CONFIG.queueLimiterMax,
+          limiterDurationMs: APP_CONFIG.queueLimiterDurationMs,
         },
-        removeOnComplete: { count: 1000 },
-        removeOnFail: { count: 500 },
-      },
-    });
+        "BullMQ worker initialized (worker mode)"
+      );
+      return;
+    }
 
-    worker = new Worker(
-      QUEUE_NAME,
-      async (job: Job<PipelineJobData>) => {
-        logger.info({ jobId: job.id, submissionId: job.data.submissionId }, "Pipeline job started");
-        metrics.queueSize.dec();
-
-        const output = await runPipeline({
-          code: job.data.code,
-          language: job.data.language,
-          userComments: job.data.userComments,
-        } satisfies PipelineInput);
-
-        // Store results in DB
-        const db = await getDb();
-        if (db) {
-          await db.insert(pipelineResults).values({
-            submissionId: job.data.submissionId,
-            forensicDossier: output.forensicDossier,
-            rebuiltCode: output.rebuiltCode,
-            qualityReport: output.qualityReport,
-            tokensUsed: output.tokensUsed,
-          });
-        }
-
-        metrics.llmTokensTotal.inc(output.tokensUsed);
-        logger.info(
-          { jobId: job.id, submissionId: job.data.submissionId, tokens: output.tokensUsed },
-          "Pipeline job completed"
-        );
-
-        return output;
-      },
-      {
-        connection,
-        concurrency: APP_CONFIG.queueWorkerConcurrency,
-        limiter: {
-          max: APP_CONFIG.queueLimiterMax,
-          duration: APP_CONFIG.queueLimiterDurationMs,
-        },
-      }
-    );
-
-    worker.on("failed", (job, err) => {
-      logger.error({ jobId: job?.id, err: err.message }, "Pipeline job failed");
-    });
-
-    worker.on("error", (err) => {
-      logger.error({ err: err.message }, "Worker error");
-    });
-
+    ensureQueue();
+    ensureWorker();
     logger.info(
       {
         queue: QUEUE_NAME,
@@ -126,10 +169,13 @@ export function initJobQueue(): void {
         limiterMax: APP_CONFIG.queueLimiterMax,
         limiterDurationMs: APP_CONFIG.queueLimiterDurationMs,
       },
-      "BullMQ pipeline queue and worker initialized"
+      "BullMQ queue and worker initialized (both mode)"
     );
   } catch (err) {
-    logger.warn({ err: (err as Error).message }, "Failed to initialize BullMQ, falling back to sync processing");
+    logger.warn(
+      { err: (err as Error).message, mode },
+      "Failed to initialize BullMQ, falling back to sync processing"
+    );
     queue = null;
     worker = null;
   }
@@ -137,7 +183,7 @@ export function initJobQueue(): void {
 
 /**
  * Enqueue a pipeline job. Returns the jobId.
- * Falls back to synchronous in-memory processing if queue is unavailable.
+ * Falls back to in-memory processing if queue is unavailable.
  */
 export async function enqueuePipelineJob(data: PipelineJobData): Promise<string> {
   if (queue) {
@@ -153,7 +199,7 @@ export async function enqueuePipelineJob(data: PipelineJobData): Promise<string>
     }
   }
 
-  // In-memory fallback: process synchronously
+  // In-memory fallback
   const jobId = `mem-${data.submissionId}-${Date.now()}`;
   const memJob: InMemoryJob = {
     id: jobId,
@@ -163,7 +209,6 @@ export async function enqueuePipelineJob(data: PipelineJobData): Promise<string>
   };
   inMemoryJobs.set(jobId, memJob);
 
-  // Process asynchronously but in-memory
   processInMemory(memJob).catch((err) => {
     logger.error({ jobId, err: (err as Error).message }, "In-memory pipeline job failed");
   });
@@ -179,7 +224,6 @@ async function processInMemory(memJob: InMemoryJob): Promise<void> {
       userComments: memJob.data.userComments,
     } satisfies PipelineInput);
 
-    // Store results in DB
     const db = await getDb();
     if (db) {
       await db.insert(pipelineResults).values({
@@ -206,7 +250,6 @@ async function processInMemory(memJob: InMemoryJob): Promise<void> {
  * Get the status of a pipeline job.
  */
 export async function getJobStatus(jobId: string): Promise<JobStatusResult> {
-  // Check in-memory first
   const memJob = inMemoryJobs.get(jobId);
   if (memJob) {
     return {
@@ -224,7 +267,6 @@ export async function getJobStatus(jobId: string): Promise<JobStatusResult> {
     };
   }
 
-  // Check BullMQ
   if (queue) {
     try {
       const job = await queue.getJob(jobId);
@@ -257,14 +299,16 @@ export async function getJobStatus(jobId: string): Promise<JobStatusResult> {
     }
   }
 
-  // Check if results exist in DB (job may have been cleaned up)
   const db = await getDb();
   if (db) {
-    // Try to extract submissionId from jobId
     const match = jobId.match(/(?:sub|mem)-(\d+)-/);
     if (match) {
       const submissionId = parseInt(match[1], 10);
-      const results = await db.select().from(pipelineResults).where(eq(pipelineResults.submissionId, submissionId)).limit(1);
+      const results = await db
+        .select()
+        .from(pipelineResults)
+        .where(eq(pipelineResults.submissionId, submissionId))
+        .limit(1);
 
       if (results.length > 0) {
         return {

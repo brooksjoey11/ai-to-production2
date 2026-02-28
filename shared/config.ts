@@ -40,21 +40,50 @@ export const APP_CONFIG = {
   /** Pipeline job timeout in ms (5 minutes) */
   jobTimeoutMs: envInt("JOB_TIMEOUT_MS", 300_000),
 
+  /** BullMQ worker concurrency (per process) */
+  queueWorkerConcurrency: envInt("QUEUE_WORKER_CONCURRENCY", 2),
+
+  /** BullMQ limiter max jobs per duration */
+  queueLimiterMax: envInt("QUEUE_LIMITER_MAX", 5),
+
+  /** BullMQ limiter duration in ms */
+  queueLimiterDurationMs: envInt("QUEUE_LIMITER_DURATION_MS", 60_000),
+
   /** Default LLM model */
   defaultModel: envStr("DEFAULT_LLM_MODEL", "gpt-4-turbo"),
 
   /** Supported languages */
   supportedLanguages: [
-    "javascript", "typescript", "python", "java", "csharp", "go",
-    "rust", "ruby", "php", "swift", "kotlin", "c", "cpp", "sql",
-    "html", "css", "shell", "other",
+    "javascript",
+    "typescript",
+    "python",
+    "java",
+    "csharp",
+    "go",
+    "rust",
+    "ruby",
+    "php",
+    "swift",
+    "kotlin",
+    "c",
+    "cpp",
+    "sql",
+    "html",
+    "css",
+    "shell",
+    "other",
   ] as const,
 
   /** Available LLM models */
   availableModels: [
-    "gpt-4-turbo", "gpt-4o", "gpt-4o-mini",
-    "claude-3-5-sonnet", "claude-3-haiku",
-    "gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.5-flash",
+    "gpt-4-turbo",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "claude-3-5-sonnet",
+    "claude-3-haiku",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash",
+    "gemini-2.5-flash",
   ] as const,
 } as const;
 

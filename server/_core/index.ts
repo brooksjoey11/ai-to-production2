@@ -15,6 +15,7 @@ import { initJobQueue, closeJobQueue } from "../jobQueue";
 import { requestLogger, errorSanitizer } from "../middleware";
 import { healthCheck } from "../health";
 import { metrics } from "../metrics";
+import { errorHandler } from "../middleware/errorHandler";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -137,6 +138,7 @@ startServer().catch((err) => {
   }
 
   // Error sanitization (must be last middleware)
+  app.use(errorHandler);
   app.use(errorSanitizer);
 
   const preferredPort = parseInt(process.env.PORT || "3000");

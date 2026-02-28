@@ -1,3 +1,4 @@
+import logger from "../logger";
 import { ENV } from "./env";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "function";
@@ -52,17 +53,34 @@ export type ToolChoiceExplicit = {
 
 export type ToolChoice = ToolChoicePrimitive | ToolChoiceByName | ToolChoiceExplicit;
 
+export type JsonSchema = {
+  name: string;
+  schema: Record<string, unknown>;
+  strict?: boolean;
+};
+
+export type OutputSchema = JsonSchema;
+
+export type ResponseFormat =
+  | { type: "text" }
+  | { type: "json_object" }
+  | { type: "json_schema"; json_schema: JsonSchema };
+
 export type InvokeParams = {
-  messages: Message[];
-  /** Optional model override. If omitted, falls back to the server default. */
   model?: string;
+
+  messages: Message[];
+
   tools?: Tool[];
   toolChoice?: ToolChoice;
   tool_choice?: ToolChoice;
+
   maxTokens?: number;
   max_tokens?: number;
+
   outputSchema?: OutputSchema;
   output_schema?: OutputSchema;
+
   responseFormat?: ResponseFormat;
   response_format?: ResponseFormat;
 };
@@ -96,19 +114,6 @@ export type InvokeResult = {
   };
 };
 
-export type JsonSchema = {
-  name: string;
-  schema: Record<string, unknown>;
-  strict?: boolean;
-};
-
-export type OutputSchema = JsonSchema;
-
-export type ResponseFormat =
-  | { type: "text" }
-  | { type: "json_object" }
-  | { type: "json_schema"; json_schema: JsonSchema };
-
 const ensureArray = (value: MessageContent | MessageContent[]): MessageContent[] =>
   Array.isArray(value) ? value : [value];
 
@@ -117,17 +122,9 @@ const normalizeContentPart = (part: MessageContent): TextContent | ImageContent 
     return { type: "text", text: part };
   }
 
-  if (part.type === "text") {
-    return part;
-  }
-
-  if (part.type === "image_url") {
-    return part;
-  }
-
-  if (part.type === "file_url") {
-    return part;
-  }
+  if (part.type === "text") return part;
+  if (part.type === "image_url") return part;
+  if (part.type === "file_url") return part;
 
   throw new Error("Unsupported message content part");
 };
@@ -182,9 +179,7 @@ const normalizeToolChoice = (
     }
 
     if (tools.length > 1) {
-      throw new Error(
-        "tool_choice 'required' needs a single tool or specify the tool name explicitly"
-      );
+      throw new Error("tool_choice 'required' needs a single tool or specify the tool name explicitly");
     }
 
     return {
@@ -209,8 +204,8 @@ const resolveApiUrl = () =>
     : "https://forge.manus.im/v1/chat/completions";
 
 const assertApiKey = () => {
-  if (!ENV.forgeApiKey) {
-    throw new Error("OPENAI_API_KEY is not configured");
+  if (!ENV.forgeApiKey || ENV.forgeApiKey.trim().length === 0) {
+    throw new Error("BUILT_IN_FORGE_API_KEY is not configured");
   }
 };
 
@@ -258,8 +253,8 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   assertApiKey();
 
   const {
-    messages,
     model,
+    messages,
     tools,
     toolChoice,
     tool_choice,
@@ -267,10 +262,14 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     output_schema,
     responseFormat,
     response_format,
+    maxTokens,
+    max_tokens,
   } = params;
 
+  const selectedModel = (model && model.trim().length > 0 ? model.trim() : "gemini-2.5-flash") as string;
+
   const payload: Record<string, unknown> = {
-    model: model && model.trim().length > 0 ? model : "gemini-2.5-flash",
+    model: selectedModel,
     messages: messages.map(normalizeMessage),
   };
 
@@ -283,10 +282,10 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     payload.tool_choice = normalizedToolChoice;
   }
 
-  payload.max_tokens = 32768;
-  payload.thinking = {
-    budget_tokens: 128,
-  };
+  payload.max_tokens = (typeof maxTokens === "number" ? maxTokens : typeof max_tokens === "number" ? max_tokens : 32768);
+
+  // Provider-specific extension field (Forge proxy supports this)
+  payload.thinking = { budget_tokens: 128 };
 
   const normalizedResponseFormat = normalizeResponseFormat({
     responseFormat,
@@ -299,18 +298,34 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     payload.response_format = normalizedResponseFormat;
   }
 
-  const response = await fetch(resolveApiUrl(), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ENV.forgeApiKey}`,
-    },
-    body: JSON.stringify(payload),
-  });
+  const url = resolveApiUrl();
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${ENV.forgeApiKey}`,
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    logger.error({ model: selectedModel, url, err: msg }, "LLM invoke network failure");
+    throw new Error(`LLM invoke failed: network error – ${msg}`);
+  }
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`LLM invoke failed: ${response.status} ${response.statusText} – ${errorText}`);
+    const errorText = await response.text().catch(() => "");
+    const clipped = errorText.length > 2000 ? `${errorText.slice(0, 2000)}…` : errorText;
+
+    logger.error(
+      { model: selectedModel, url, status: response.status, statusText: response.statusText, error: clipped },
+      "LLM invoke failed"
+    );
+
+    throw new Error(`LLM invoke failed: ${response.status} ${response.statusText} – ${clipped}`);
   }
 
   return (await response.json()) as InvokeResult;

@@ -4,7 +4,7 @@ import logger from "./logger";
 import { APP_CONFIG } from "@shared/config";
 import { runPipeline, type PipelineInput, type PipelineOutput } from "./pipeline";
 import { getDb } from "./db";
-import { pipelineResults, codeSubmissions } from "../drizzle/schema";
+import { pipelineResults } from "../drizzle/schema";
 import { eq } from "drizzle-orm";
 import { metrics } from "./metrics";
 
@@ -79,7 +79,7 @@ export function initJobQueue(): void {
           code: job.data.code,
           language: job.data.language,
           userComments: job.data.userComments,
-        });
+        } satisfies PipelineInput);
 
         // Store results in DB
         const db = await getDb();
@@ -94,16 +94,19 @@ export function initJobQueue(): void {
         }
 
         metrics.llmTokensTotal.inc(output.tokensUsed);
-        logger.info({ jobId: job.id, submissionId: job.data.submissionId, tokens: output.tokensUsed }, "Pipeline job completed");
+        logger.info(
+          { jobId: job.id, submissionId: job.data.submissionId, tokens: output.tokensUsed },
+          "Pipeline job completed"
+        );
 
         return output;
       },
       {
         connection,
-        concurrency: 2,
+        concurrency: APP_CONFIG.queueWorkerConcurrency,
         limiter: {
-          max: 5,
-          duration: 60_000,
+          max: APP_CONFIG.queueLimiterMax,
+          duration: APP_CONFIG.queueLimiterDurationMs,
         },
       }
     );
@@ -116,7 +119,15 @@ export function initJobQueue(): void {
       logger.error({ err: err.message }, "Worker error");
     });
 
-    logger.info("BullMQ pipeline queue and worker initialized");
+    logger.info(
+      {
+        queue: QUEUE_NAME,
+        concurrency: APP_CONFIG.queueWorkerConcurrency,
+        limiterMax: APP_CONFIG.queueLimiterMax,
+        limiterDurationMs: APP_CONFIG.queueLimiterDurationMs,
+      },
+      "BullMQ pipeline queue and worker initialized"
+    );
   } catch (err) {
     logger.warn({ err: (err as Error).message }, "Failed to initialize BullMQ, falling back to sync processing");
     queue = null;
@@ -166,7 +177,7 @@ async function processInMemory(memJob: InMemoryJob): Promise<void> {
       code: memJob.data.code,
       language: memJob.data.language,
       userComments: memJob.data.userComments,
-    });
+    } satisfies PipelineInput);
 
     // Store results in DB
     const db = await getDb();
@@ -253,11 +264,7 @@ export async function getJobStatus(jobId: string): Promise<JobStatusResult> {
     const match = jobId.match(/(?:sub|mem)-(\d+)-/);
     if (match) {
       const submissionId = parseInt(match[1], 10);
-      const results = await db
-        .select()
-        .from(pipelineResults)
-        .where(eq(pipelineResults.submissionId, submissionId))
-        .limit(1);
+      const results = await db.select().from(pipelineResults).where(eq(pipelineResults.submissionId, submissionId)).limit(1);
 
       if (results.length > 0) {
         return {

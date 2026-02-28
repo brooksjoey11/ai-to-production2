@@ -33,6 +33,7 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
   logger.info({ step: "forensic", model: forensicModel }, "Pipeline step starting");
 
   const forensicResult = await invokeLLM({
+    model: forensicModel,
     messages: [
       { role: "system", content: forensicPrompt },
       { role: "user", content: forensicUserMsg },
@@ -49,6 +50,7 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
   logger.info({ step: "rebuilder", model: rebuilderModel }, "Pipeline step starting");
 
   const rebuilderResult = await invokeLLM({
+    model: rebuilderModel,
     messages: [
       { role: "system", content: rebuilderPrompt },
       { role: "user", content: rebuilderUserMsg },
@@ -65,6 +67,7 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
   logger.info({ step: "quality", model: qualityModel }, "Pipeline step starting");
 
   const qualityResult = await invokeLLM({
+    model: qualityModel,
     messages: [
       { role: "system", content: qualityPrompt },
       { role: "user", content: qualityUserMsg },
@@ -96,7 +99,11 @@ function buildRebuilderUserMessage(input: PipelineInput, forensicDossier: string
   return `Here is the original ${input.language} code:\n\n\`\`\`${input.language}\n${input.code}\n\`\`\`\n\nHere is the forensic analysis:\n\n${forensicDossier}\n\nRewrite the code to fix all identified issues. Output only the corrected code.`;
 }
 
-function buildQualityUserMessage(input: PipelineInput, forensicDossier: string, rebuiltCode: string): string {
+function buildQualityUserMessage(
+  input: PipelineInput,
+  forensicDossier: string,
+  rebuiltCode: string
+): string {
   return `Original ${input.language} code:\n\n\`\`\`${input.language}\n${input.code}\n\`\`\`\n\nForensic analysis:\n\n${forensicDossier}\n\nRebuilt code:\n\n\`\`\`${input.language}\n${rebuiltCode}\n\`\`\`\n\nSummarize the improvements in plain language.`;
 }
 

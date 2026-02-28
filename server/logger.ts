@@ -1,21 +1,13 @@
 import pino from "pino";
-
-const isProduction = process.env.NODE_ENV === "production";
+import { ENV } from "./_core/env";
 
 export const logger = pino({
-  level: process.env.LOG_LEVEL ?? (isProduction ? "info" : "debug"),
-  ...(isProduction
-    ? {}
-    : {
-        transport: {
-          target: "pino-pretty",
-          options: {
-            colorize: true,
-            translateTime: "SYS:HH:MM:ss",
-            ignore: "pid,hostname",
-          },
-        },
-      }),
+  level: ENV.LOG_LEVEL || "info",
+  base: {
+    service: "ai-to-production",
+    env: ENV.NODE_ENV,
+  },
+  timestamp: pino.stdTimeFunctions.isoTime,
 });
 
 export default logger;

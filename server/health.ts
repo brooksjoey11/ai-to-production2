@@ -1,101 +1,115 @@
 import type { Request, Response } from "express";
-import { getDb } from "./db";
-import { sql } from "drizzle-orm";
-import { pingRedis, isRedisAvailable } from "./redis";
-import { ENV } from "./_core/env";
+import { getDb } from "./_core/db";
+import { getRedis, isRedisAvailable } from "./redis";
 import logger from "./logger";
+import { ENV } from "./_core/env";
+import axios from "axios";
 
-interface HealthStatus {
-  status: "healthy" | "degraded" | "unhealthy";
+type ComponentStatus = "up" | "down";
+
+interface HealthResponse {
+  status: "ok" | "degraded" | "down";
   timestamp: string;
-  uptime: number;
-  checks: {
-    database: { status: string; latencyMs?: number };
-    redis: { status: string; latencyMs?: number };
-    llm: { status: string; latencyMs?: number };
+  components: {
+    database: ComponentStatus;
+    redis: ComponentStatus;
+    llm: ComponentStatus;
   };
 }
 
-/**
- * Health check endpoint handler.
- * Checks DB, Redis, and LLM service reachability.
- */
-export async function healthCheck(_req: Request, res: Response): Promise<void> {
-  const result: HealthStatus = {
-    status: "healthy",
+async function checkDatabase(): Promise<ComponentStatus> {
+  try {
+    const db = await getDb();
+    if (!db) return "down";
+
+    await db.execute("SELECT 1");
+    return "up";
+  } catch (err) {
+    logger.error({ err }, "Database health check failed");
+    return "down";
+  }
+}
+
+async function checkRedis(): Promise<ComponentStatus> {
+  try {
+    if (!isRedisAvailable()) {
+      return "down";
+    }
+
+    const redis = getRedis();
+    await redis.ping();
+    return "up";
+  } catch (err) {
+    logger.error({ err }, "Redis health check failed");
+    return "down";
+  }
+}
+
+async function checkLLM(): Promise<ComponentStatus> {
+  try {
+    if (!ENV.FORGE_API_URL || !ENV.FORGE_API_KEY) {
+      return "down";
+    }
+
+    // Lightweight HEAD or minimal GET to validate reachability
+    await axios.get(ENV.FORGE_API_URL, {
+      timeout: 3000,
+      headers: {
+        Authorization: `Bearer ${ENV.FORGE_API_KEY}`,
+      },
+    });
+
+    return "up";
+  } catch (err) {
+    logger.error({ err }, "LLM health check failed");
+    return "down";
+  }
+}
+
+function aggregateStatus(
+  database: ComponentStatus,
+  redis: ComponentStatus,
+  llm: ComponentStatus
+): "ok" | "degraded" | "down" {
+  const components = [database, redis, llm];
+
+  if (components.every((c) => c === "up")) {
+    return "ok";
+  }
+
+  if (components.some((c) => c === "down")) {
+    // If DB or LLM is down, treat system as down
+    if (database === "down" || llm === "down") {
+      return "down";
+    }
+
+    return "degraded";
+  }
+
+  return "degraded";
+}
+
+export async function healthCheck(_req: Request, res: Response) {
+  const [database, redis, llm] = await Promise.all([
+    checkDatabase(),
+    checkRedis(),
+    checkLLM(),
+  ]);
+
+  const status = aggregateStatus(database, redis, llm);
+
+  const response: HealthResponse = {
+    status,
     timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    checks: {
-      database: { status: "unknown" },
-      redis: { status: "unknown" },
-      llm: { status: "unknown" },
+    components: {
+      database,
+      redis,
+      llm,
     },
   };
 
-  // ─── Check Database ───
-  try {
-    const start = Date.now();
-    const db = await getDb();
-    if (db) {
-      await db.execute(sql`SELECT 1`);
-      result.checks.database = { status: "ok", latencyMs: Date.now() - start };
-    } else {
-      result.checks.database = { status: "unavailable" };
-      result.status = "degraded";
-    }
-  } catch (err) {
-    result.checks.database = { status: "error" };
-    result.status = "unhealthy";
-    logger.warn({ err: (err as Error).message }, "Health check: DB failed");
-  }
+  const httpStatus =
+    status === "ok" ? 200 : status === "degraded" ? 200 : 503;
 
-  // ─── Check Redis ───
-  try {
-    const start = Date.now();
-    if (isRedisAvailable()) {
-      const ok = await pingRedis();
-      result.checks.redis = {
-        status: ok ? "ok" : "error",
-        latencyMs: Date.now() - start,
-      };
-      if (!ok) result.status = "degraded";
-    } else {
-      result.checks.redis = { status: "unavailable (using in-memory fallback)" };
-      // Redis being unavailable is degraded, not unhealthy
-      if (result.status === "healthy") result.status = "degraded";
-    }
-  } catch (err) {
-    result.checks.redis = { status: "error" };
-    if (result.status === "healthy") result.status = "degraded";
-    logger.warn({ err: (err as Error).message }, "Health check: Redis failed");
-  }
-
-  // ─── Check LLM Service ───
-  try {
-    const start = Date.now();
-    const apiUrl = ENV.forgeApiUrl
-      ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/models`
-      : "https://forge.manus.im/v1/models";
-
-    const response = await fetch(apiUrl, {
-      method: "GET",
-      headers: {
-        authorization: `Bearer ${ENV.forgeApiKey}`,
-      },
-      signal: AbortSignal.timeout(5000),
-    });
-
-    result.checks.llm = {
-      status: response.ok ? "ok" : `error (${response.status})`,
-      latencyMs: Date.now() - start,
-    };
-    if (!response.ok) result.status = "degraded";
-  } catch (err) {
-    result.checks.llm = { status: "error" };
-    if (result.status === "healthy") result.status = "degraded";
-    logger.warn({ err: (err as Error).message }, "Health check: LLM service failed");
-  }
-
-  const statusCode = result.status === "unhealthy" ? 503 : 200;
-  res.status(statusCode).json(result);
+  res.status(httpStatus).json(response);
 }

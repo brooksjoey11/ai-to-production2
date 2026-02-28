@@ -99,11 +99,7 @@ function buildRebuilderUserMessage(input: PipelineInput, forensicDossier: string
   return `Here is the original ${input.language} code:\n\n\`\`\`${input.language}\n${input.code}\n\`\`\`\n\nHere is the forensic analysis:\n\n${forensicDossier}\n\nRewrite the code to fix all identified issues. Output only the corrected code.`;
 }
 
-function buildQualityUserMessage(
-  input: PipelineInput,
-  forensicDossier: string,
-  rebuiltCode: string
-): string {
+function buildQualityUserMessage(input: PipelineInput, forensicDossier: string, rebuiltCode: string): string {
   return `Original ${input.language} code:\n\n\`\`\`${input.language}\n${input.code}\n\`\`\`\n\nForensic analysis:\n\n${forensicDossier}\n\nRebuilt code:\n\n\`\`\`${input.language}\n${rebuiltCode}\n\`\`\`\n\nSummarize the improvements in plain language.`;
 }
 

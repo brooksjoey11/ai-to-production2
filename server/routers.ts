@@ -14,6 +14,13 @@ import { seedDefaults } from "./seed";
 import { enqueuePipelineJob, getJobStatus } from "./jobQueue";
 import { metrics } from "./metrics";
 import logger from "./logger";
+import {
+  createProvider,
+  listProviders,
+  setProviderApiKey,
+  testProviderConnection,
+  updateProvider,
+} from "./providerService";
 
 export const appRouter = router({
   system: systemRouter,
@@ -37,7 +44,10 @@ export const appRouter = router({
     submit: protectedProcedure
       .input(
         z.object({
-          code: z.string().min(1, "Code is required").max(APP_CONFIG.maxCodeSizeBytes, `Code too large (${APP_CONFIG.maxCodeSizeBytes} bytes max)`),
+          code: z
+            .string()
+            .min(1, "Code is required")
+            .max(APP_CONFIG.maxCodeSizeBytes, `Code too large (${APP_CONFIG.maxCodeSizeBytes} bytes max)`),
           language: z.enum(APP_CONFIG.supportedLanguages),
           userComments: z.string().max(2000).optional(),
         })
@@ -189,10 +199,12 @@ export const appRouter = router({
     /** Get all submissions (admin view) */
     getSubmissions: adminProcedure
       .input(
-        z.object({
-          limit: z.number().min(1).max(100).default(50),
-          offset: z.number().min(0).default(0),
-        }).optional()
+        z
+          .object({
+            limit: z.number().min(1).max(100).default(50),
+            offset: z.number().min(0).default(0),
+          })
+          .optional()
       )
       .query(async ({ input }) => {
         const db = await getDb();
@@ -228,6 +240,104 @@ export const appRouter = router({
     /** Get available models list */
     getAvailableModels: adminProcedure.query(() => {
       return APP_CONFIG.availableModels;
+    }),
+
+    // ─── API Providers (Phase 1) ───
+    providers: router({
+      list: adminProcedure.query(async () => {
+        try {
+          return await listProviders();
+        } catch (err) {
+          logger.error({ err: err instanceof Error ? err.message : "unknown" }, "Failed to list providers");
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to load providers" });
+        }
+      }),
+
+      createOpenRouter: adminProcedure
+        .input(
+          z.object({
+            name: z.string().min(2).max(50),
+            apiKey: z.string().min(1).max(5000),
+            baseUrl: z.string().url(),
+          })
+        )
+        .mutation(async ({ input }) => {
+          try {
+            const { id } = await createProvider({
+              name: input.name,
+              baseUrl: input.baseUrl,
+              authType: "bearer",
+              authHeaderName: "Authorization",
+              authPrefix: "Bearer ",
+              requiresApiKey: true,
+              isActive: true,
+            });
+
+            await setProviderApiKey(id, input.apiKey);
+
+            return { success: true, providerId: id };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : "Unknown error";
+            logger.error({ err: msg }, "Failed to create OpenRouter provider");
+            throw new TRPCError({ code: "BAD_REQUEST", message: msg });
+          }
+        }),
+
+      update: adminProcedure
+        .input(
+          z.object({
+            providerId: z.number().int().positive(),
+            baseUrl: z.string().url().optional(),
+            isActive: z.boolean().optional(),
+          })
+        )
+        .mutation(async ({ input }) => {
+          try {
+            await updateProvider(input.providerId, {
+              ...(input.baseUrl !== undefined ? { baseUrl: input.baseUrl } : {}),
+              ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+            });
+            return { success: true };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : "Unknown error";
+            logger.error({ err: msg, providerId: input.providerId }, "Failed to update provider");
+            throw new TRPCError({ code: "BAD_REQUEST", message: msg });
+          }
+        }),
+
+      setKey: adminProcedure
+        .input(
+          z.object({
+            providerId: z.number().int().positive(),
+            apiKey: z.string().min(1).max(5000),
+          })
+        )
+        .mutation(async ({ input }) => {
+          try {
+            await setProviderApiKey(input.providerId, input.apiKey);
+            return { success: true };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : "Unknown error";
+            logger.error({ err: msg, providerId: input.providerId }, "Failed to set provider key");
+            throw new TRPCError({ code: "BAD_REQUEST", message: msg });
+          }
+        }),
+
+      testConnection: adminProcedure
+        .input(
+          z.object({
+            providerId: z.number().int().positive(),
+          })
+        )
+        .mutation(async ({ input }) => {
+          try {
+            return await testProviderConnection(input.providerId);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : "Unknown error";
+            logger.error({ err: msg, providerId: input.providerId }, "Provider test failed");
+            throw new TRPCError({ code: "BAD_REQUEST", message: msg });
+          }
+        }),
     }),
   }),
 });

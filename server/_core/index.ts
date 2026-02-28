@@ -15,6 +15,7 @@ import { initJobQueue, closeJobQueue } from "../jobQueue";
 import { requestLogger, errorSanitizer } from "../middleware";
 import { healthCheck } from "../health";
 import { metrics } from "../metrics";
+import { validateEnvOrThrow } from "./env";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -36,6 +37,10 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 }
 
 async function startServer() {
+  // Validate required environment variables up-front for fast failure.
+  // In production, DATABASE_URL is required for persistent storage.
+  validateEnvOrThrow();
+
   const app = express();
   const server = createServer(app);
 
